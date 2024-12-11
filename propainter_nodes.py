@@ -109,7 +109,8 @@ class ProPainterInpaint:
         device = model_management.get_torch_device()
         # TODO: Check if this convertion from Torch to PIL is really necessary.
         frames = convert_image_to_frames(image)
-        video_length = image.size(dim=0)
+        # video_length = image.size(dim=0)
+        video_length = 2
         input_size = frames[0].size
 
         image_config = ImageConfig(
@@ -125,33 +126,69 @@ class ProPainterInpaint:
             device,
             image_config.process_size,
         )
-
-        frames_tensor, flow_masks_tensor, masks_dilated_tensor, original_frames = (
-            prepare_frames_and_masks(frames, mask, image_config, device)
-        )
-
         models = initialize_models(device, inpaint_config.fp16)
-        print(f"\nProcessing  {inpaint_config.video_length} frames...")
 
-        updated_frames, updated_masks, pred_flows_bi = process_inpainting(
-            models,
-            frames_tensor,
-            flow_masks_tensor,
-            masks_dilated_tensor,
-            inpaint_config,
-        )
+        def process_frame_pair(frames):
+            image_config = ImageConfig(
+                width, height, mask_dilates, flow_mask_dilates, input_size, len(frames)
+            )
+            inpaint_config = ProPainterConfig(
+                ref_stride,
+                neighbor_length,
+                subvideo_length,
+                raft_iter,
+                fp16,
+                len(frames),
+                device,
+                image_config.process_size,
+            )
+            frames_tensor, flow_masks_tensor, masks_dilated_tensor, original_frames = (
+                prepare_frames_and_masks(frames, mask, image_config, device)
+            )
 
-        composed_frames = feature_propagation(
-            models.inpaint_model,
-            updated_frames,
-            updated_masks,
-            masks_dilated_tensor,
-            pred_flows_bi,
-            original_frames,
-            inpaint_config,
-        )
+            print(f"\nProcessing  {inpaint_config.video_length} frames...")
 
-        return handle_output(composed_frames, flow_masks_tensor, masks_dilated_tensor)
+            updated_frames, updated_masks, pred_flows_bi = process_inpainting(
+                models,
+                frames_tensor,
+                flow_masks_tensor,
+                masks_dilated_tensor,
+                inpaint_config,
+            )
+
+            composed_frames = feature_propagation(
+                models.inpaint_model,
+                updated_frames,
+                updated_masks,
+                masks_dilated_tensor,
+                pred_flows_bi,
+                original_frames,
+                inpaint_config,
+            )
+            return (composed_frames, flow_masks_tensor, masks_dilated_tensor)
+
+        processed_frames = []
+        # Check if there's an odd number of frames
+        if len(frames) % 2 == 1:
+            # Process all but the last 3 frames in pairs
+            for i in range(0, len(frames) - 3, 2):
+                frame_pair = frames[i:i+2]
+                processed_pair, flow_masks_tensor, masks_dilated_tensor = process_frame_pair(frame_pair)
+                processed_frames.extend(processed_pair)
+
+            # Now process the last 3 frames together (or in whatever way makes sense)
+            last_three = frames[-3:]
+            processed_triple, flow_masks_tensor, masks_dilated_tensor = process_frame_pair(last_three)
+            processed_frames.extend(processed_triple)
+
+        else:
+            # If even, just process all frames in pairs
+            for i in range(0, len(frames), 2):
+                frame_pair = frames[i:i+2]
+                processed_pair, flow_masks_tensor, masks_dilated_tensor = process_frame_pair(frame_pair)
+                processed_frames.extend(processed_pair)
+
+        return handle_output(processed_frames, flow_masks_tensor, masks_dilated_tensor)
 
 
 class ProPainterOutpaint:
